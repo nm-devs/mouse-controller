@@ -1,0 +1,92 @@
+"""
+Wrapper around MediaPipe Hands for detecting hands in video frames.
+
+Detects hand presence and extracts normalized and pixel-level landmark
+coordinates for use by downstream classifiers and controllers.
+"""
+import cv2
+import mediapipe as mp
+
+from config import(
+    MAX_HANDS,
+    DETECTION_CONFIDENCE,
+    TRACKING_CONFIDENCE,
+    COLOR_PRIMARY,
+    COLOR_WHITE
+)
+
+class HandDetector:
+    def __init__(self, max_hands=None, detection_confidence=None, tracking_confidence=None):
+        from core.config_manager import config_mgr
+        self.mp_hands = mp.solutions.hands
+        self.mp_drawing = mp.solutions.drawing_utils
+        
+        self.max_hands = max_hands if max_hands else config_mgr.get('MAX_HANDS')
+        self.det_conf = detection_confidence if detection_confidence else config_mgr.get('DETECTION_CONFIDENCE')
+        self.trk_conf = tracking_confidence if tracking_confidence else config_mgr.get('TRACKING_CONFIDENCE')
+        
+        self._init_mediapipe()
+        
+    def _init_mediapipe(self):
+        self.hands = self.mp_hands.Hands(
+            static_image_mode=False,
+            max_num_hands=self.max_hands,
+            min_detection_confidence=self.det_conf,
+            min_tracking_confidence=self.trk_conf
+        )
+        
+    def update_settings(self, detection_conf, tracking_conf, max_hands=None):
+        """Force recreate the MediaPipe backend when user presses Apply button."""
+        self.det_conf = detection_conf
+        self.trk_conf = tracking_conf
+        if max_hands is not None:
+            self.max_hands = max_hands
+        self._init_mediapipe()
+    
+    def detect(self, frame):
+        """
+        Detect hands in frame and return list of hand data with pixel coordinates.
+        Each hand dict contains: label, landmarks (raw), positions (list of (id, x, y))
+        """
+        h, w, _ = frame.shape
+        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results = self.hands.process(rgb_frame)
+        hands_data = []
+        
+        if results.multi_hand_landmarks:
+            for hand_landmarks, hand_info in zip(
+                results.multi_hand_landmarks,
+                results.multi_handedness
+            ):
+                hand_label = hand_info.classification[0].label
+                
+                # Convert landmarks to pixel positions
+                positions = []
+                for idx, lm in enumerate(hand_landmarks.landmark):
+                    px, py = int(lm.x * w), int(lm.y * h)
+                    positions.append((idx, px, py))
+                
+                hands_data.append({
+                    "label": hand_label,
+                    "landmarks": hand_landmarks,
+                    "positions": positions
+                })
+        return hands_data
+    
+    def draw_hands(self, frame, hands_data):
+        """Draw hand landmarks and labels on frame."""
+        for hand in hands_data:
+            self.mp_drawing.draw_landmarks(
+                frame,
+                hand['landmarks'],
+                self.mp_hands.HAND_CONNECTIONS,
+                self.mp_drawing.DrawingSpec(color=COLOR_PRIMARY, thickness=2, circle_radius=2),
+                self.mp_drawing.DrawingSpec(color=COLOR_WHITE, thickness=2)
+            )
+            # Draw label
+            if hand['positions']:
+                # Wrist is landmark 0
+                wrist_x, wrist_y = hand['positions'][0][1], hand['positions'][0][2]
+                cv2.putText(frame, hand['label'], (wrist_x - 10, wrist_y - 10), 
+                            cv2.FONT_HERSHEY_SIMPLEX, 1, COLOR_WHITE, 2)
+        return frame
